@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Green Globs Reborn (PoC)</title>
+    <style>
+        body {
+            background-color: #000;
+            color: #00FF00;
+            font-family: "Courier New", Courier, monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0;
+            padding: 20px;
+        }
+        canvas {
+            border: 2px solid #00FF00;
+            box-shadow: 0 0 10px #00FF00;
+            background-color: #111;
+        }
+        #ui-layer {
+            margin-top: 20px;
+            width: 600px;
+            display: flex;
+            justify-content: space-between;
+        }
+        input {
+            background: #000;
+            border: 1px solid #00FF00;
+            color: #00FF00;
+            font-family: inherit;
+            padding: 5px;
+            width: 70%;
+            font-size: 16px;
+        }
+        button {
+            background: #003300;
+            color: #00FF00;
+            border: 1px solid #00FF00;
+            cursor: pointer;
+            padding: 5px 15px;
+            font-family: inherit;
+            font-size: 16px;
+        }
+        button:hover { background: #005500; }
+        .hud { font-size: 18px; margin-bottom: 10px; width: 600px; display: flex; justify-content: space-between;}
+    </style>
+</head>
+<body>
+
+    <div class="hud">
+        <span>SCORE: <span id="scoreDisplay">0</span></span>
+        <span>SHOTS: <span id="shotsDisplay">0</span></span>
+    </div>
+
+    <canvas id="gameCanvas" width="600" height="480"></canvas>
+
+    <div id="ui-layer">
+        <span>Y = </span>
+        <input type="text" id="equationInput" placeholder="Type equation (e.g. 0.5*x*x - 3)" value="0.5*x*x - 2">
+        <button onclick="fireShot()">SHOOT</button>
+    </div>
+
+    <div style="margin-top: 15px; font-size: 12px; color: #66aa66;">
+        Supported: +, -, *, /, Math.sin(x), Math.cos(x), Math.pow(x,2)<br>
+        (Note: Use JS syntax for this PoC, e.g. "Math.sin(x)" not "SIN(X)")
+    </div>
+
+<script>
+    // --- 1. CONFIGURATION & STATE ---
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    // Coordinate System (Matches the Apple II logic found: -10 to 10 X, -8 to 8 Y)
+    const MIN_X = -10, MAX_X = 10;
+    const MIN_Y = -8, MAX_Y = 8;
+    const GLOB_RADIUS_PIXELS = 6;
+    const HIT_THRESHOLD = 0.4; // Tolerance for hitting a glob
+
+    let score = 0;
+    let shotsTaken = 0;
+    let globs = [];
+    let currentShot = null; // Object to track the animation of the shot
+    
+    // --- 2. INITIALIZATION ---
+    function init() {
+        // Create 13 Random Globs (The original 'NG' variable in line 50100 was 13)
+        for(let i=0; i<13; i++) {
+            globs.push({
+                x: (Math.random() * (MAX_X - MIN_X)) + MIN_X,
+                y: (Math.random() * (MAX_Y - MIN_Y)) + MIN_Y,
+                hit: false
+            });
+        }
+        gameLoop();
+    }
+
+    // --- 3. COORDINATE MAPPING (The "BIN.WILSON" Replacement) ---
+    // Maps logical math coordinates to Canvas pixels
+    function mapX(x) {
+        return ((x - MIN_X) / (MAX_X - MIN_X)) * canvas.width;
+    }
+
+    function mapY(y) {
+        // Canvas Y is inverted (0 is top), Math Y is standard (0 is bottom)
+        return canvas.height - ((y - MIN_Y) / (MAX_Y - MIN_Y)) * canvas.height;
+    }
+
+    // --- 4. GAME LOOP ---
+    function drawGrid() {
+        ctx.strokeStyle = '#004400';
+        ctx.lineWidth = 1;
+        
+        // Draw Axes
+        ctx.beginPath();
+        // X Axis
+        ctx.moveTo(0, mapY(0)); ctx.lineTo(canvas.width, mapY(0));
+        // Y Axis
+        ctx.moveTo(mapX(0), 0); ctx.lineTo(mapX(0), canvas.height);
+        ctx.stroke();
+
+        // Draw Ticks (every 1 unit)
+        ctx.fillStyle = '#004400';
+        for (let i = Math.ceil(MIN_X); i <= MAX_X; i++) {
+            if (i===0) continue;
+            ctx.beginPath();
+            ctx.arc(mapX(i), mapY(0), 2, 0, Math.PI*2);
+            ctx.fill();
+        }
+        for (let i = Math.ceil(MIN_Y); i <= MAX_Y; i++) {
+            if (i===0) continue;
+            ctx.beginPath();
+            ctx.arc(mapX(0), mapY(i), 2, 0, Math.PI*2);
+            ctx.fill();
+        }
+    }
+
+    function drawGlobs() {
+        globs.forEach(glob => {
+            if (glob.hit) return; // Don't draw hit globs
+            
+            ctx.fillStyle = '#00FF00';
+            ctx.beginPath();
+            const px = mapX(glob.x);
+            const py = mapY(glob.y);
+            ctx.arc(px, py, GLOB_RADIUS_PIXELS, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Add the "shine" (retro feel)
+            ctx.fillStyle = '#FFFFFF';
+            ctx.beginPath();
+            ctx.arc(px - 2, py - 2, 1, 0, Math.PI * 2);
+            ctx.fill();
+        });
+    }
+
+    function gameLoop() {
+        // Clear Screen
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        drawGrid();
+        drawGlobs();
+
+        // Animate the shot if one is active
+        if (currentShot) {
+            updateShot();
+        }
+
+        requestAnimationFrame(gameLoop);
+    }
+
+    // --- 5. THE LOGIC LAYER (Math & Scoring) ---
+
+    function fireShot() {
+        const input = document.getElementById('equationInput').value;
+        shotsTaken++;
+        document.getElementById('shotsDisplay').innerText = shotsTaken;
+
+        // PARSER: This replaces the complex BASIC parser.
+        // We create a JS function from the string.
+        // NOTE: This is basic. It expects JS syntax (Math.sin, etc)
+        try {
+            const mathFunction = new Function('x', 'return ' + input);
+            
+            currentShot = {
+                func: mathFunction,
+                currentX: MIN_X,
+                step: 0.1, // Animation speed
+                combo: 0 // Track hits in this specific shot
+            };
+        } catch (e) {
+            alert("Invalid Equation! Try: 2*x + 1");
+        }
+    }
+
+    function updateShot() {
+        ctx.strokeStyle = '#FFFFFF';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+
+        // Draw the full path calculated so far
+        let startX = MIN_X;
+        let startY = currentShot.func(startX);
+        ctx.moveTo(mapX(startX), mapY(startY));
+
+        // Trace up to currentX
+        for (let x = MIN_X; x <= currentShot.currentX; x += 0.05) {
+            let y = currentShot.func(x);
+            // Optimization: Don't draw if way off screen
+            if (y > MIN_Y - 5 && y < MAX_Y + 5) {
+                ctx.lineTo(mapX(x), mapY(y));
+            } else {
+                ctx.moveTo(mapX(x), mapY(y)); // Gap in line if off screen
+            }
+            
+            // --- COLLISION DETECTION ---
+            // This mimics the logic from lines 3400-3600 in the original code
+            checkCollisions(x, y);
+        }
+        ctx.stroke();
+
+        // Advance animation
+        currentShot.currentX += currentShot.step;
+
+        // End shot if we hit the right edge
+        if (currentShot.currentX > MAX_X) {
+            currentShot = null;
+        }
+    }
+
+    function checkCollisions(shotX, shotY) {
+        globs.forEach(glob => {
+            if (glob.hit) return;
+
+            // Calculate Distance (Pythagorean)
+            const dist = Math.sqrt(Math.pow(glob.x - shotX, 2) + Math.pow(glob.y - shotY, 2));
+
+            if (dist < HIT_THRESHOLD) {
+                // HIT!
+                glob.hit = true;
+                
+                // --- SCORING ALGORITHM ---
+                // Replicated from BASIC Line 5992: NP = NP + Z2 ^ PN
+                const points = Math.pow(2, currentShot.combo);
+                score += points;
+                currentShot.combo++; // Increment combo (PN)
+                
+                // Visual Feedback
+                console.log(`Hit! Points: ${points}, Combo: ${currentShot.combo}`);
+                document.getElementById('scoreDisplay').innerText = score;
+            }
+        });
+    }
+
+    // Start the game
+    init();
+
+</script>
+</body>
+</html>
